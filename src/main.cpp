@@ -443,7 +443,9 @@ void handleRoot()
 
   html += "</div></body></html>";
   server.send(200, "text/html", html);
+  
 }
+
 
 //----------------
 // Add this with your existing motor control functions
@@ -771,8 +773,15 @@ void loop()
   // Automatic tracking mode
   if (autoMode)
   {
+  if (digitalRead(SENSOR_WEST) == HIGH)
+  {
+    Serial.println("🌞 Moving West reach end position ...");
+    stopMotor();
+  }
+
+
     // Daytime tracking (morning to evening)
-    if (now.Hour() >= morningStartHour && now.Hour() < nightReturnHour)
+    else if (now.Hour() >= morningStartHour && now.Hour() < nightReturnHour)
     {
       returningToEast = false;
 
