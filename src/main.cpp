@@ -1,12 +1,12 @@
 #include <Arduino.h>
-//--------- include ---------------
+//--------- lib---------------
 #include <WiFi.h>
 #include <WebServer.h>
 #include <RtcDS1302.h>
 #include <ThreeWire.h>
 
 #include <ESPmDNS.h> // Include the ESPmDNS library
-
+#include <esp_task_wdt.h>
 #include <EEPROM.h>
 #define EEPROM_SIZE 512 // حجم الذاكرة المطلوبة (يمكن تعديله حسب الحاجة)
 //---------------struct Schedule---------------
@@ -34,30 +34,8 @@ int morningStartHour = 7;
 int nightReturnHour = 18;
 int stepInterval = 30;
 int motorStepTime = 30; // Variable now represents time in seconds
-//----------------
-// Add this with your existing global variables
-// ----------------------------
-// POWER CUT RECOVERY SYSTEM
-// ----------------------------
-
-// Stores daily movement data (time and date)
-struct DailyStepData
-{
-  int stepTime;   // Actual average movement time in seconds
-  int dayOfMonth; // Day number (1-31) for date tracking
-};
-
-// Circular buffer for 7 days of history
-DailyStepData dailyStepRecords[7];
-int currentRecordIndex = 0;     // Position in circular buffer
-int todayTotalStepTime = 0;     // Cumulative movement time today
-int todayStepCount = 0;         // Number of movements today
-int lastStoredDay = -1;         // Last day we stored data (prevent duplicates)
-const int assumedStepTime = 30; // Theoretical step time (seconds)
-
-// EEPROM storage locations
-const int STEP_DATA_START_ADDR = 100; // Start of step data records
-const int CURRENT_INDEX_ADDR = 150;   // Stores current buffer position
+// ----------------------- ----------------------- 
+int actualMotionTime = 0; // Variable to store the actual motion time
 
 //--------saveCustomSettingsToEEPROM-------------
 void saveCustomSettingsToEEPROM()
@@ -125,19 +103,19 @@ void loadCustomSettingsFromEEPROM()
   }
   Serial.println("✅ Custom settings loaded from EEPROM");
 }
-// ----------------------- EEPROM Functions -----------------------
+// ----------------------- saveSettingsToEEPROM() -----------------------
 void saveSettingsToEEPROM()
 {
   EEPROM.writeBool(0, autoMode);
   EEPROM.write(1, morningStartHour);
   EEPROM.write(2, nightReturnHour);
   EEPROM.write(3, stepInterval);
-  EEPROM.write(4, motorStepTime & 0xFF);        // حفظ الجزء الأدنى
-  EEPROM.write(5, (motorStepTime >> 8) & 0xFF); // حفظ الجزء الأعلى
+  EEPROM.write(4, motorStepTime & 0xFF);        // حفظ الجزء  الاعلى
+  EEPROM.write(5, (motorStepTime >> 8) & 0xFF); //حفظ الجزء الانى
   EEPROM.commit();
   Serial.println("✅ Settings saved to EEPROM");
 }
-
+//-----------loadSettingsFromEEPROM()-------------------
 void loadSettingsFromEEPROM()
 {
   autoMode = EEPROM.readBool(0);
@@ -145,9 +123,18 @@ void loadSettingsFromEEPROM()
   nightReturnHour = EEPROM.read(2);
   stepInterval = EEPROM.read(3);
   motorStepTime = EEPROM.read(4) | (EEPROM.read(5) << 8);
+  actualMotionTime = EEPROM.read(8) | (EEPROM.read(9) << 8);  // New: Load actual motion time
   Serial.println("✅ Settings loaded from EEPROM");
+  
+  EEPROM.commit();
 }
-// ----------------------- EEPROM Functions -----------------------
+//---------------
+void saveMotionTimeToEEPROM() {
+  EEPROM.write(8, actualMotionTime & 0xFF);
+  EEPROM.write(9, (actualMotionTime >> 8) & 0xFF);
+  EEPROM.commit();
+}
+// ----------------------- void validateOrResetSettings() -----------------------
 void validateOrResetSettings()
 {
   if (morningStartHour > 23)
@@ -159,46 +146,16 @@ void validateOrResetSettings()
   if (motorStepTime < 20 || motorStepTime > 3000)
     motorStepTime = 30;
 }
-//-------------------saveDailyStepDataToEEPROM()-------------
-// Add these after your existing EEPROM functions
-// ----------------------------
-// DATA MANAGEMENT FUNCTIONS
-// ----------------------------
 
-/**
- * Processes and stores daily averages at midnight
- */
-void processDailyStepTime()
-{
-  /* ... full function from earlier ... */
-}
-
-/**
- * Saves all step data to EEPROM
- */
-void saveStepDataToEEPROM()
-{
-  /* ... full function from earlier ... */
-}
-
-/**
- * Loads historical data from EEPROM on startup
- */
-void loadStepDataFromEEPROM()
-{
-  /* ... full function from earlier ... */
-}
-
-    // ----------------------- Configuration -----------------------
-    const char *ssid = "solar_track";
+// ----------------------- Configuration -----------------------
+const char *ssid = "solar_track";
 const char *password = "admin653";
 
 const int RELAY_EAST = 26;
 const int RELAY_WEST = 14;
 const int SENSOR_EAST = 22;
 const int SENSOR_WEST = 23;
-// Add this with your other function prototypes
-int calculateAdjustedStepTime();
+
 // ----------------------- Global Variables -----------------------
 bool isMovingEast = false;
 bool isMovingWest = false;
@@ -287,15 +244,6 @@ void handleUnlock()
   server.sendHeader("Location", "/", true);
   server.send(302, "text/plain", "Redirecting...");
 }
-//------------------handleCalibrationData()-------------
-// Add this with your other server.on() handlers
-/**
- * Web handler for calibration data
- */
-void handleCalibrationData()
-{
-  /* ... full function from earlier ... */
-}
 
 // ----------------------- Web Server Handlers -----------------------
 void handleRoot()
@@ -368,9 +316,6 @@ void handleRoot()
           "</div>"
           "</form>";
 
-
-          
-
   // General settings form
   html += "<form action='/settings' method='POST'>"
           "<div class='settings-box'>"
@@ -395,20 +340,6 @@ void handleRoot()
                                  "<input type='number' name='motorStepTime' value='" +
           String(motorStepTime) + "' min='20' max='3000'>"
                                   "</div>";
-
-  // =============================================
-  // INSERT THE MOVEMENT CALIBRATION SECTION HERE
-  // =============================================
-  html += "<div class='settings-box'>"
-          "<h2>معايرة الحركة</h2>"
-          "<div class='calibration-data'>"
-          "<p><strong>اليوم:</strong> <span id='todaySteps'>0</span> حركات, متوسط: <span id='todayAvg'>0</span>ث</p>"
-          "<p><strong>زمن الخطوة المفترض:</strong> <span id='assumedTime'>30</span>ث</p>"
-          "<div id='historicalData'>"
-          "<h3>السجل لـ 7 أيام</h3>"
-          "</div>"
-          "</div>"
-          "</div>";
 
   // Custom movement settings
   html += "<div class='settings-box'>"
@@ -443,39 +374,6 @@ void handleRoot()
 
   html += "</div></body></html>";
   server.send(200, "text/html", html);
-  
-}
-
-
-//----------------
-// Add this with your existing motor control functions
-/**
- * Moves panel west while tracking exact duration
- * @param duration Expected movement time in seconds
- * Records actual time taken accounting for system delays
- */
-void trackAndMoveWest(int duration)
-{
-  unsigned long moveStart = millis(); // Record start time
-
-  // Execute movement
-  moveWest();
-  delay(duration * 1000);
-  stopMotor();
-
-  // Calculate actual movement time (seconds)
-  int actualMoveTime = (millis() - moveStart) / 1000;
-
-  // Update today's statistics
-  todayStepCount++;
-  todayTotalStepTime += actualMoveTime;
-
-  // Debug output
-  Serial.print("Movement - Expected: ");
-  Serial.print(duration);
-  Serial.print("s, Actual: ");
-  Serial.print(actualMoveTime);
-  Serial.println("s");
 }
 //---------------MovementSetting----------------
 struct MovementSetting
@@ -604,15 +502,79 @@ void handleSetTime()
   server.sendHeader("Location", "/?success=1", true);
   server.send(302, "text/plain", "Redirecting...");
 }
+//------------------------locationAcurately----------------
+void locationAccurately() {
+  if (digitalRead(SENSOR_EAST) == HIGH) {
+    actualMotionTime = 0;
+    saveMotionTimeToEEPROM();
+    return;
+  }
 
-// ----------------------- Setup and Loop -----------------------
+  RtcDateTime now = Rtc.GetDateTime();
+  int currentHour = now.Hour();
+  int currentMinute = now.Minute();
+  
+  if (currentHour >= morningStartHour && currentHour < nightReturnHour) {
+    int totalMinutes = (currentHour - morningStartHour) * 60 + currentMinute;
+    int expectedSteps = totalMinutes / stepInterval;
+   // THIS IS WHERE THE NEW CODE GOES:
+   int stepsNeeded = expectedSteps - actualMotionTime;
+    
+   if (stepsNeeded > 0 && digitalRead(SENSOR_WEST) == LOW) {
+     Serial.printf("Need to move %d steps west\n", stepsNeeded);
+     
+     for(int i = 0; i < stepsNeeded && digitalRead(SENSOR_WEST) == LOW; i++) {
+       moveWest();
+       delay(motorStepTime * 1000);
+       stopMotor();
+       actualMotionTime++;  // Track this step
+       saveMotionTimeToEEPROM(); // Save after each step
+       delay(500); // Brief pause between steps
+     }
+   }
+ }
+ // 4. Reset at night
+ else if (currentHour >= nightReturnHour) {
+   actualMotionTime = 0;
+   saveMotionTimeToEEPROM();
+ }
+}  
+//--------logCurrentPosition()------------------
+void logCurrentPosition() {
+  Serial.print("Current position: ");
+  Serial.print(actualMotionTime);
+  Serial.print(" steps from east (");
+  Serial.print(actualMotionTime * motorStepTime);
+  Serial.println(" seconds of movement)");
+
+}
+//----safeMoveWest----------------------
+void safeMoveWest(int duration) {
+  unsigned long start = millis();
+  while (millis() - start < duration && digitalRead(SENSOR_WEST) == LOW) {
+    moveWest();
+    delay(100); // Small delay for sensor checking
+  }
+  stopMotor();
+}
+// ----------------------- Setup  -----------------------
 void setup()
 {
-  Serial.begin(115200);
+  esp_task_wdt_init(10, true); // Reset if frozen for 10 seconds
+  
 
+  Serial.begin(115200);
   delay(5000); // Wait 5 seconds for power stabilization
 
   EEPROM.begin(EEPROM_SIZE);
+
+  // Clear old motionTime values if they exist
+if (EEPROM.read(6) != 255 || EEPROM.read(7) != 255) {
+  EEPROM.write(6, 255);
+  EEPROM.write(7, 255);
+  EEPROM.commit();
+}
+
   loadSettingsFromEEPROM();
   loadCustomSettingsFromEEPROM(); // Load custom settings from EEPROM
   validateOrResetSettings();
@@ -626,30 +588,26 @@ void setup()
 
   pinMode(SENSOR_EAST, INPUT_PULLDOWN);
   pinMode(SENSOR_WEST, INPUT_PULLDOWN);
+  //------------------------------
+  
+    // ↓↓↓ ADD POSITION LOGGING HERE ↓↓↓
+    Serial.print("Initial position: ");
+    if(digitalRead(SENSOR_EAST) == HIGH) {
+      Serial.println("EAST (home)");
+    }
+    else if(digitalRead(SENSOR_WEST) == HIGH) {
+      Serial.println("WEST (max)");
+    }
+    else {
+      Serial.printf("MIDDLE (step %d)\n", actualMotionTime);
+    }
+    // ↑↑↑ END OF ADDITION ↑↑↑
+  
+    
+  //----------------------------------------------
 
   setupWiFi();
   Rtc.Begin();
-
- 
-    // ... your existing setup code ...
-
-    // Add these lines at the end of setup():
-    // Initialize EEPROM
-    EEPROM.begin(EEPROM_SIZE);
-
-    // Load historical data
-    loadStepDataFromEEPROM();
-
-    // Initialize day tracking
-    RtcDateTime now = Rtc.GetDateTime();
-    if (lastStoredDay != now.Day())
-    {
-      todayStepCount = 0;
-      todayTotalStepTime = 0;
-    }
-
-    // Add web handler
-  server.on("/calibrationData", handleCalibrationData);
 
   server.on("/", handleRoot);
   server.on("/move", handleMove);
@@ -702,66 +660,23 @@ void processCustomMovements()
     }
   }
 }
-//------------------processCustomMovements()-------------
-/**
- * Calculates movement time with compensation
- * @return Adjusted step time in seconds
- * Uses 7-day moving average to detect under-movement
- * Applies 2x deficit compensation when needed
- */
-int calculateAdjustedStepTime()
-{
-  int validDays = 0;
-  int totalStepTime = 0;
-
-  // Calculate 7-day average
-  for (int i = 0; i < 7; i++)
-  {
-    if (dailyStepRecords[i].dayOfMonth > 0)
-    { // Only count valid days
-      validDays++;
-      totalStepTime += dailyStepRecords[i].stepTime;
-    }
-  }
-
-  // No history yet - use default
-  if (validDays == 0)
-    return assumedStepTime;
-
-  int averageStepTime = totalStepTime / validDays;
-
-  // Compensation algorithm
-  if (averageStepTime < assumedStepTime)
-  {
-    int deficit = assumedStepTime - averageStepTime;
-    int adjustment = deficit * 2; // Double the deficit
-
-    // Safety limit - don't exceed 2x assumed time
-    adjustment = min(adjustment, assumedStepTime);
-
-    Serial.print("Applying compensation: +");
-    Serial.print(adjustment);
-    Serial.println("s");
-
-    return assumedStepTime + adjustment;
-  }
-
-  return assumedStepTime;
-}
 //-----------------------------loop ----------
 void loop()
 {
-  // Handle web requests
-  server.handleClient();
 
-  // Process scheduled movements
-  processCustomMovements();
+  static bool firstRun = true;
+  if (firstRun) {
+    locationAccurately();
+    firstRun = false;
+  }
 
-  // Get current time from RTC
+  server.handleClient();    // Always handle client requests
+  processCustomMovements(); // Process custom movements first
+
+  // Update time from RTC
   RtcDateTime now = Rtc.GetDateTime();
-
-  // Check if we need to store yesterday's data (runs at midnight)
-  processDailyStepTime();
+  int currentHour = now.Hour();
+  unsigned long currentMillis = millis();
 
   // Prevent both relays from being active simultaneously
   if (isMovingEast && isMovingWest)
@@ -770,50 +685,49 @@ void loop()
     Serial.println("⚠️ Error: Both relays active! Stopping motor.");
   }
 
-  // Automatic tracking mode
+  // **Automatic Mode**
   if (autoMode)
   {
-  if (digitalRead(SENSOR_WEST) == HIGH)
-  {
-    Serial.println("🌞 Moving West reach end position ...");
-    stopMotor();
-  }
-
-
-    // Daytime tracking (morning to evening)
-    else if (now.Hour() >= morningStartHour && now.Hour() < nightReturnHour)
+    // 🌞 **Morning: Move West at intervals**
+    if (currentHour >= morningStartHour && currentHour < nightReturnHour)
     {
-      returningToEast = false;
+      returningToEast = false; // Reset nighttime return stat
 
-      // Time for next movement (every stepInterval minutes)
-      if (!isMovingEast && !isMovingWest &&
-          (millis() - lastMoveTime >= (stepInterval * 60000)))
-      {
-
-        // Get compensated movement duration
-        int moveDuration = calculateAdjustedStepTime();
-
-        // Execute tracked movement (replaces simple moveWest())
-        trackAndMoveWest(moveDuration);
-
-        // Update last movement time
-        lastMoveTime = millis();
+      // Only execute general settings if no custom movement is active
+      //if (!isMovingEast && !isMovingWest && (currentMillis - lastMoveTime >= (stepInterval * 60000)))
+      //{  
+        //------------------
+        // In auto mode west movement section:
+      if (!isMovingEast && !isMovingWest && (millis() - lastMoveTime >= (stepInterval * 60000))) {
+       if (digitalRead(SENSOR_WEST) == LOW) {
+         moveWest();
+         delay(motorStepTime * 1000);
+         stopMotor();
+         // In loop():
+         actualMotionTime += 1; // Correct increment
+         saveMotionTimeToEEPROM();
+         lastMoveTime = millis();
+        }
       }
     }
-    // Nighttime return to east position
-    else if (now.Hour() >= nightReturnHour && !returningToEast)
+        
+
+    // 🌙 **Night: Return to East until reaching the sensor**
+    else if (currentHour >= nightReturnHour && !returningToEast)
     {
       Serial.println("🌙 Auto Mode: Returning to East");
 
+      // Continue moving East until the East sensor is triggered
       if (digitalRead(SENSOR_EAST) == LOW)
       {
-        moveEast();
+        Serial.println("🌙 Moving East to return to start position...");
+        moveEast(); // Ensure we are moving East, not West
       }
       else
       {
-        stopMotor();
-        returningToEast = true;
         Serial.println("✅ Reached East Position - Stopping motor");
+        stopMotor();
+        returningToEast = true; // Confirm return and prevent repetition
       }
     }
   }
